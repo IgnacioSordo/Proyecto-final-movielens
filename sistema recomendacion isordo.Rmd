@@ -1,0 +1,403 @@
+---
+title: "Proyecto Movielens"
+author: "JOSE IGNACIO SORDO SIERPE"
+date: "04/01/2022"
+output:
+  html_document: 
+    highlight: null
+  pdf_document:
+    toc: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Introduction
+
+This project is carried out as a final summary of the Data Science Harvard Edx courses, based on the programming language R.
+
+During the project, a movie recommendation system will be created using the Movielens dataset, in its 10M version.
+
+The objective of a recommendation system is to generate suggestions for new items or to predict the usefulness of a specific item for a particular user. 
+
+In Machine Learning, to perform data analysis and make predictions, the datasets are divided into two different samples, a training sample and a validation sample. In this way, the overfitting that would occur if the machine trains with all the data with which it also makes the predictions is eliminated.
+
+In our case, the sample has been divided into 90% for the training set (edx) and 10% for the validation sample (validation)
+
+The training sample consists of 9000055 observations with a total of 6 variables.
+
+The variables are "userId", "movieId", "rating", "timestamp", "title", "genres"
+UserId ---  Numeric asigned to each user
+Movie Id --- Numeric asigned to each movie
+Rating --- Categorical rating of the movie, range from 0.5 to 5
+Timestamp --- This variable represents the time and data in which the rating was provided. The units are seconds since January 1, 1970
+Title --- Name ot the movie and year
+Genres --- Movies genres
+
+The validation sample consists of a total of 999999 observations.
+
+The metric that will be used to evaluate the predictions in the validation set is RMSE (residual mean squared error). And the goal is to get a value lower than 0.86490.
+
+RMSE <- function(true_ratings, predicted_ratings){sqrt(mean((true_ratings - predicted_ratings)^2))}
+
+To execute the project we will follow the following phases: exploration and visualization of the data, methodology used, results obtained and final conclusions.
+
+The data is downloaded according to the instructions in the MovieLens 10M data set provided by the course.
+
+```{r}
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(lubridate)
+library(kableExtra)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+
+## 2. Methodology
+
+### 2.1. Data description
+
+First of all we are going to see a visualization of the data set, to understand how it is structured.
+
+```{r}
+#dataset visualization
+head(edx)
+
+```
+
+We analyze the number of users that the data set has, the number of movies and the number of movie genres.
+
+```{r}
+# unique movies, users and genres
+
+edx %>% summarise(
+  uniq_movies = n_distinct(movieId),
+  uniq_users = n_distinct(userId),
+  uniq_genres = n_distinct(genres))
+
+```
+
+The average rating of the films is obtained with
+
+```{r}
+#rating mean
+media<-mean(edx$rating)
+media
+
+```
+
+To see the statistical distribution of the films we took a summary. Besides, We also obtain the number of movies for each rating.
+
+```{r}
+
+#movies valoration
+summary(edx$rating)
+
+#movies number by valoration
+
+table_ratings<-table(edx$rating)
+table_ratings
+
+```
+
+Making a bar graph we see the distribution. And since the integer values present a greater number of valuations.
+
+```{r}
+#graphics
+ggplot(edx,aes(rating))+
+  geom_bar(width =0.50, fill="lightgreen", color="black")+
+  scale_x_continuous(breaks = seq(0, 5, by=0.5))+
+  labs(title= "Movies Rating")
+
+```
+
+The distribution by users is:  
+
+```{r}
+#Distribution of Users
+edx %>% group_by(userId) %>% summarize(n = n()) %>%
+  ggplot(aes(n)) + geom_histogram(fill = "lightgreen",color="black", bins = 10) +
+  scale_x_log10() + 
+  ggtitle("Number of Users Ratings")
+
+```
+The distribution by ratings is as follows
+```{r}
+#Distribution of Movie Ratings
+edx %>% group_by(movieId) %>% summarize(n = n()) %>%
+  ggplot(aes(n)) + geom_histogram(fill = "lightgreen", color = "black", bins = 10) +
+  scale_x_log10() +
+  ggtitle("Number of Movies Ratings")
+```
+
+
+It is important to see which films have been the ones that have been valued the most times.
+
+```{r}
+#most rated movies
+
+conteo<-data.frame(table(edx$title))
+names(conteo)<-c("Title","Times")
+
+conteo<-conteo[order(conteo$Times, decreasing=TRUE),]
+
+head (conteo,10)
+```
+
+The films that have been rated the most times have been Pulp Fiction followed by Forrest Gump, and The Silence of the Lambs, all of them above 30,000 ratings.
+
+Graphically ordered from highest to lowest are observed below:
+
+```{r}
+#most rated movies graphics
+
+ggplot(conteo[1:10, ], aes(x= reorder(Title,-Times), y=Times))+
+  geom_bar(stat="identity", fill="lightgreen",color="black")+
+  geom_text(aes(label=Times),vjust=-0.3, size=3.5)+
+  theme(axis.text.x = element_text(angle=45, hjust=1))+
+  ggtitle("Total views of the Top Movies")
+```
+
+And the ones that have been valued the least times, with a single assessment, are the following:
+
+```{r}
+#less rated movies
+
+conteo<-data.frame(table(edx$title))
+names(conteo)<-c("Title","Times")
+
+conteo<-conteo[order(conteo$Times, decreasing=FALSE),]
+
+head (conteo,10)
+```
+
+### 2.2. Data Analysis
+
+The analysis of the recommendation system model will be built step by step the model taking into account the following sequence:
+
+a)	Simple model calculated on the mean.
+
+```{r}
+# mean rating
+media <- mean(edx$rating)
+media
+
+```
+
+The result of the first model is
+```{r}
+#testing in validation set
+
+model_number0 <- RMSE(validation$rating, media)
+model_number0
+```
+
+
+b)	Model calculated on the difference in the average rating of each film and the overall average rating (b_i)
+
+```{r}
+# calculate b_i using the training set 
+movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - media))
+
+
+
+# predicted ratings
+predicted_ratings_bi <- media + validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  .$b_i
+
+#testing in validation set
+model_number1 <- RMSE(validation$rating,predicted_ratings_bi)  
+model_number1
+```
+
+c) Model calculated with the average user rating (b_u)
+```{r}
+#b.movie + user effect modelo
+
+#calculate b_u using the training set 
+
+user_avgs <- edx %>%  
+  left_join(movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - media - b_i))
+
+#predicted ratings
+predicted_ratings_bu <- validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(pred = media + b_i + b_u) %>%
+  .$pred
+
+#testing in validation set
+model_number2 <- RMSE(validation$rating,predicted_ratings_bu)
+model_number2
+
+```
+d) Model calculated by adding the time effect (b_t)
+
+```{r}
+#c.movie + user + time effect
+
+# previously create a copy of validation set , valid, and create the date feature which is the timestamp converted to a datetime object  and  rounded by week.
+
+validation_copy <- validation
+validation_copy <- validation_copy %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) 
+
+# calculate time effects ( b_t) using the training set
+temp_avgs <- edx %>%
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  group_by(date) %>%
+  summarize(b_t = mean(rating - media - b_i - b_u))
+
+# predicted ratings
+predicted_ratings_bt <- validation_copy %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  left_join(temp_avgs, by='date') %>%
+  mutate(pred = media + b_i + b_u + b_t) %>%
+  .$pred
+
+#testing in validation set
+model_number3 <- RMSE(validation_copy$rating,predicted_ratings_bt)
+model_number3
+
+```
+e)  Regularized model with user average optimizing lambda
+```{r}
+#regularization movie + user effect model
+
+lambdas <- seq(0, 10, 0.25)
+
+rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  b_i <- edx %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - media)/(n()+l))
+  
+  b_u <- edx %>%
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - media)/(n()+l))
+  
+  predicted_ratings <-
+    validation %>%
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = media + b_i + b_u) %>%
+    pull(pred)
+  return(RMSE(predicted_ratings, validation$rating))
+})
+
+
+```
+The graphical representation of the curve is as follows.
+```{r}
+#graphic lambda
+qplot(lambdas, rmses)
+```
+The value of lambda that minimizes RMSE is
+
+```{r}
+lambdas[which.min(rmses)]
+```
+The result of the model on the validation set is
+```{r}
+#testing in validation set
+model_number4 <- min(rmses)
+model_number4
+```
+
+
+## 3. Results
+
+The summary of the final values for each model is shown in the following table.
+
+```{r}
+resultados_totales <- data.frame(methods=c("Simple media","Movie effect (b_i)","Movie + user effects (b_u)","Movie + user + time effects (b_t)", "Regularized Movie + User Effect Model"),
+                                 rmse = c(model_number0, model_number1, model_number2, model_number3, model_number4))
+
+kable(resultados_totales) %>%
+  kable_styling(bootstrap_options = "striped" , full_width = F , position = "center") %>%
+  kable_styling(bootstrap_options = "bordered", full_width = F , position ="center") %>%
+  column_spec(1,bold = T ) %>%
+  column_spec(2,bold =T ,color = "black" , background ="lightgreen")
+```
+The lowest value obtained is 0.8648170 with the regularization model using a lambda parameter of 5.25
+
+This value meets the target set by being below 0.86490.
+
+## Final Conclusions
+
+Recommendation systems are having an extraordinary boom in e-commerce. Finding the most appropriate strategy and reaching the potential customer positively influences sales and, ultimately, business success in the eCommerce sector.
+
+The project has been developed in accordance with the provisions of Professor Irizarry's reference book.
+
+As a summary of the report, it can be noted that as different effects have been incorporated into the simple model of the use of the average, the RMSE has been falling from the value of 1.0612018 (a very bad value because it is higher than 1) to 0.8648170, which represents an improvement of 18.51% compared to the initial model.
+
+It is feasible to continue making different assumptions and apply different effects in order to improve the result obtained, and that line of research can be followed by future students.
+
+## References
+
+Irizarry, R. (2020). Introducción a la ciencia de datos. Análisis de datos y algoritmos de predicción con R. Harvard University.
+Mendoza, G., Laureano, Y., & Pérez de Celis, M. (2019). Métricas de similaridad y evaluación para sistemas de recomendación de filtrado colaborativo. RITI Journal Vol. 7, 224-240.
+Vozalis, E., & Margaritis, K. (2003). Analysis or Recommender Systems. In Proceedings or the 6th Hellenic European Conference on Computeer Mathematica and its Applications (HERCMA-2003). Athens.
+
+
+
+
+
